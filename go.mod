@@ -1,4 +1,4 @@
-module github.com/devanshu0x/zentro
+module github.com/devanshu0x/chirpy-backend
 
 go 1.26.3
 

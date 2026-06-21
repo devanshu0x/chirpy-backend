@@ -10,7 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/devanshu0x/zentro/internal/database"
+	"github.com/devanshu0x/chirpy-backend/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -76,11 +77,19 @@ func  main(){
 	
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
 		apiCfg.reset()
+		err:=apiCfg.dbQueries.DeleteAllUsers(r.Context())
+		if err!=nil{
+			fmt.Printf("Error while deleting users: %v",err)
+			respondWithError(w,500,"Failed to delete users")
+		}
+		w.Header().Set("content-type","text/plain")
+		w.Write([]byte("All users deleted!"))
 	})
 
-	mux.HandleFunc("POST /api/validate_chirp",func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/chirps",func(w http.ResponseWriter, r *http.Request) {
 		type params struct{
 			Body string `json:"body"`
+			UserId uuid.UUID `json:"user_id"`
 		}
 		defer r.Body.Close()
 		param:=params{}
@@ -106,12 +115,80 @@ func  main(){
 			}
 
 			result:=strings.Join(words," ")
+			arg:=database.CreateChirpParams{
+				Body: result,
+				UserID: param.UserId,
+			}
+			dbChirp,err:= apiCfg.dbQueries.CreateChirp(r.Context(),arg)
+			if err!=nil{
+				fmt.Printf("Failed to save chirp: %v",err)
+				respondWithError(w,500,"Failed to save chirp")
+			}
 
-			if resErr:=respondWithJSON(w,200,map[string] string {"cleaned_body":result});resErr!=nil{
+			chirp:=Chirp{
+				ID: dbChirp.ID,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.UpdatedAt,
+				Body: dbChirp.Body,
+				UserID: dbChirp.UserID,
+			}
+
+			if resErr:=respondWithJSON(w,201,chirp);resErr!=nil{
 				fmt.Printf("failed to write response: %v",resErr)
 			}
 		}
 
+	})
+
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		body:= &struct{
+			Email string `json:"email"`
+		}{}
+		defer r.Body.Close()
+
+		decoder:=json.NewDecoder(r.Body)
+		if err:=decoder.Decode(body);err!=nil{
+			fmt.Printf("Failed to decode body: %v",err)
+			respondWithError(w,501,"Failed to decode body")
+			return
+		}
+
+		dbUser,err:=apiCfg.dbQueries.CreateUser(r.Context(),body.Email)
+		if err!=nil{
+			fmt.Printf("Failed to create user: %v",err)
+			respondWithError(w,501,"Failed to create user")
+			return
+		}
+
+		user:=User{
+			ID: dbUser.ID,
+			CreatedAt: dbUser.CreatedAt,
+			UpdatedAt: dbUser.UpdatedAt,
+			Email: dbUser.Email,
+		}
+
+		respondWithJSON(w,201,user)
+	})
+
+	mux.HandleFunc("GET /api/chirps",func(w http.ResponseWriter, r *http.Request) {
+		dbChirps,err:=apiCfg.dbQueries.GetAllChirps(r.Context())
+		if err!=nil{
+			fmt.Printf("Failed to fetch chirps: %v",err)
+			respondWithError(w,500,"Failed to fetch chirps")
+		}
+		chirps:=make([]Chirp,len(dbChirps))
+
+		for i,dbChirp:= range dbChirps{
+			chirps[i]=Chirp{
+				ID: dbChirp.ID,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.UpdatedAt,
+				Body: dbChirp.Body,
+				UserID: dbChirp.UserID,
+			}
+		}
+
+		respondWithJSON(w,200,chirps)
 	})
 
 	serverErr:=server.ListenAndServe()
