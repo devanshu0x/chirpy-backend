@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -68,4 +70,11 @@ func GetBearerToken(headers http.Header) (string,error){
 	
 	return "",fmt.Errorf("Authorization not in valid format")
 	
+}
+
+
+func MakeRefereshToken() string{
+	token:=make([]byte, 32)
+	rand.Read(token)
+	return hex.EncodeToString(token)
 }

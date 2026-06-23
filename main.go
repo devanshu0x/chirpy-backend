@@ -79,11 +79,12 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request) {
-		apiCfg.reset()
+		// apiCfg.reset()
 		err := apiCfg.dbQueries.DeleteAllUsers(r.Context())
 		if err != nil {
 			fmt.Printf("Error while deleting users: %v", err)
 			respondWithError(w, 500, "Failed to delete users")
+			return 
 		}
 		w.Header().Set("content-type", "text/plain")
 		w.Write([]byte("All users deleted!"))
@@ -285,6 +286,17 @@ func main() {
 			return
 		}
 
+		refreshToken:=auth.MakeRefereshToken()
+
+		err=apiCfg.dbQueries.AddRefreshToken(r.Context(),database.AddRefreshTokenParams{
+			Token: refreshToken,
+			UserID: dbUser.ID,
+		})
+		if err!=nil{
+			respondWithError(w,500,"Failed to generate refresh token")
+			return
+		}
+
 		user := LoginResponse{
 			User: User{
 				ID:        dbUser.ID,
@@ -293,11 +305,156 @@ func main() {
 				Email:     dbUser.Email,
 			},
 			Token: jwt,
+			RefreshToken: refreshToken,
 		}
 
 		respondWithJSON(w, 200, user)
 
 	})
+
+
+	mux.HandleFunc("POST /api/refresh",func(w http.ResponseWriter, r *http.Request) {
+		token,err:=auth.GetBearerToken(r.Header)
+		if err!=nil{
+			respondWithError(w,401,"Token not found")
+			return
+		}
+
+		refToken,err:=apiCfg.dbQueries.ValidateRefreshToken(r.Context(),token)
+		if err!=nil{
+			respondWithError(w,401,"Token not found in db")
+			return
+		}
+
+		if refToken.ExpiresAt.Before(time.Now()) || refToken.RevokedAt.Valid{
+			respondWithError(w,401,"Token expired or revoked")
+			return
+		}
+
+		accessToken,err:=auth.MakeJWT(refToken.UserID,apiCfg.secret,time.Hour)
+		if err!=nil{
+			respondWithError(w,401,"Failed to make jwt")
+			return
+		}
+
+		respondWithJSON(w,200,map[string]string{
+			"token": accessToken,
+		})
+	})
+
+	mux.HandleFunc("POST /api/revoke",func(w http.ResponseWriter, r *http.Request) {
+		token,err:=auth.GetBearerToken(r.Header)
+		if err!=nil{
+			respondWithError(w,401,"Token not found")
+			return
+		}
+
+		err=apiCfg.dbQueries.RevokeRefreshToken(r.Context(),token)
+		if err!=nil{
+			respondWithError(w,401,"Token not found in db")
+			return
+		}
+		
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("PUT /api/users",func(w http.ResponseWriter, r *http.Request) {
+		body:=&struct{
+			Email string `json:"email"`
+			Password string `json:"password"`
+		}{}
+
+		defer r.Body.Close()
+
+		decoder:=json.NewDecoder(r.Body)
+		if err:= decoder.Decode(body);err!=nil{
+			respondWithError(w,401,"Failed to decode body")
+			return
+		}
+
+		token,err:=auth.GetBearerToken(r.Header)
+		if err!=nil{
+			respondWithError(w,401,"Failed to get token")
+			return
+		}
+
+		userId,err:=auth.ValidateJWT(token,apiCfg.secret)
+		if err!=nil{
+			respondWithError(w,401,"Wrong token")
+			return
+		}
+		
+		hashedPass,err:=auth.HashPassword(body.Password)
+		if err!=nil{
+			respondWithError(w,500,"Failed to hash password")
+			return
+		}
+
+		dbUser,err:=apiCfg.dbQueries.UpdateUser(r.Context(),database.UpdateUserParams{
+			Email: body.Email,
+			HashedPassword: hashedPass,
+			ID: userId,
+		})
+
+		if err!=nil{
+			respondWithError(w,401,"Failed to update db")
+			return
+		}
+
+		user:=User{
+			ID: dbUser.ID,
+			CreatedAt: dbUser.CreatedAt,
+			UpdatedAt: dbUser.UpdatedAt,
+			Email: dbUser.Email,
+		}
+
+		respondWithJSON(w,200,user)
+	})
+
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}",func(w http.ResponseWriter, r *http.Request) {
+		chirpId := r.PathValue("chirpID")
+		id, err := uuid.Parse(chirpId)
+		if err != nil {
+			fmt.Printf("Unable to parse chirp id as uuid")
+			respondWithError(w, 404, "Failed to parse uuid")
+			return
+
+		}
+		dbChirp, err := apiCfg.dbQueries.GetChrip(r.Context(), id)
+		if err != nil {
+			respondWithError(w, 404, "No chirp found")
+			return
+		}
+
+		token,err:=auth.GetBearerToken(r.Header)
+		if err!=nil{
+			respondWithError(w,401,"Failed to get token")
+			return
+		}
+
+		userId,err:=auth.ValidateJWT(token,apiCfg.secret)
+		if err!=nil{
+			respondWithError(w,401,"Wrong token")
+			return
+		}
+
+		if dbChirp.UserID!=userId{
+			respondWithError(w,403,"You are not you!")
+			return
+		}
+
+		err=apiCfg.dbQueries.DeleteChirp(r.Context(),dbChirp.ID)
+		if err!=nil{
+			respondWithError(w,500,"Failed to delete chirp")
+			return
+		}
+
+		respondWithJSON(w,204,map[string]string{
+			"message":"Deleted",
+		})
+		
+	})
+
 	serverErr := server.ListenAndServe()
 	if serverErr != nil {
 		fmt.Printf("Error in starting sever: %v", serverErr)

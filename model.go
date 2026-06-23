@@ -23,4 +23,11 @@ type Chirp struct {
 type LoginResponse struct{
 	User
 	Token string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+type RefreshToken struct{
+	Token string `json:"token"`
+	UserId uuid.UUID `json:"user_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at"`
 }
