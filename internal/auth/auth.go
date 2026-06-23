@@ -72,6 +72,21 @@ func GetBearerToken(headers http.Header) (string,error){
 	
 }
 
+func GetAPIKey(headers http.Header) (string,error){
+	authorization:=headers.Get("authorization")
+	if authorization==""{
+		return "",fmt.Errorf("No authorization header present")
+	}
+
+	vals:=strings.Split(authorization," ")
+	if len(vals)==2 && vals[0]=="ApiKey"{
+		return vals[1],nil
+	}
+	
+	return "",fmt.Errorf("Authorization not in valid format")
+	
+}
+
 
 func MakeRefereshToken() string{
 	token:=make([]byte, 32)

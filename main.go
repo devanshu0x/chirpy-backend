@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -22,6 +23,7 @@ type apiConfig struct {
 	fileServerHits atomic.Int32
 	dbQueries      *database.Queries
 	secret         string
+	polka_key string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -59,7 +61,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	apiCfg := apiConfig{dbQueries: database.New(db), secret: os.Getenv("SECRET_KEY")}
+	apiCfg := apiConfig{dbQueries: database.New(db), secret: os.Getenv("SECRET_KEY"), polka_key: os.Getenv("POLKA_KEY")}
 	mux.Handle("/app/", http.StripPrefix("/app", apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(".")))))
 	server := http.Server{
 		Handler: mux,
@@ -165,6 +167,8 @@ func main() {
 		}{}
 		defer r.Body.Close()
 
+		
+
 		decoder := json.NewDecoder(r.Body)
 		if err := decoder.Decode(body); err != nil {
 			fmt.Printf("Failed to decode body: %v", err)
@@ -194,13 +198,25 @@ func main() {
 			CreatedAt: dbUser.CreatedAt,
 			UpdatedAt: dbUser.UpdatedAt,
 			Email:     dbUser.Email,
+			IsChirpyRed: dbUser.IsChirpyRed.Bool,
 		}
 
 		respondWithJSON(w, 201, user)
 	})
 
 	mux.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
-		dbChirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
+		authorId:=r.URL.Query().Get("author_id")
+		var dbChirps []database.Chirp
+		if authorId!=""{
+			id,err:=uuid.Parse(authorId)
+			if err!=nil{
+				w.WriteHeader(404)
+				return
+			}
+			dbChirps,err = apiCfg.dbQueries.GetChirpOfAuthor(r.Context(),id)
+		}else{
+			dbChirps, err = apiCfg.dbQueries.GetAllChirps(r.Context())
+		}
 		if err != nil {
 			fmt.Printf("Failed to fetch chirps: %v", err)
 			respondWithError(w, 500, "Failed to fetch chirps")
@@ -216,6 +232,14 @@ func main() {
 				Body:      dbChirp.Body,
 				UserID:    dbChirp.UserID,
 			}
+		}
+
+		sortOrder:=r.URL.Query().Get("sort")
+
+		if sortOrder=="desc"{
+			sort.Slice(chirps,func(i, j int) bool {
+				return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+			})
 		}
 
 		respondWithJSON(w, 200, chirps)
@@ -303,6 +327,7 @@ func main() {
 				CreatedAt: dbUser.CreatedAt,
 				UpdatedAt: dbUser.UpdatedAt,
 				Email:     dbUser.Email,
+				IsChirpyRed: dbUser.IsChirpyRed.Bool,
 			},
 			Token: jwt,
 			RefreshToken: refreshToken,
@@ -406,6 +431,7 @@ func main() {
 			CreatedAt: dbUser.CreatedAt,
 			UpdatedAt: dbUser.UpdatedAt,
 			Email: dbUser.Email,
+			IsChirpyRed: dbUser.IsChirpyRed.Bool,
 		}
 
 		respondWithJSON(w,200,user)
@@ -453,6 +479,46 @@ func main() {
 			"message":"Deleted",
 		})
 		
+	})
+
+	mux.HandleFunc("POST /api/polka/webhooks",func(w http.ResponseWriter, r *http.Request) {
+		body:=&struct{
+			Event string `json:"event"`
+			Data struct{
+				UserID uuid.UUID `json:"user_id"`
+			} `json:"data"`
+		}{}
+		
+		api,err:=auth.GetAPIKey(r.Header)
+		if err!=nil{
+			respondWithError(w,401,"Failed to parse api key")
+			return
+		}
+
+		if api!=apiCfg.polka_key{
+			w.WriteHeader(401)
+			return
+		}
+
+		defer r.Body.Close()		
+		decoder:=json.NewDecoder(r.Body)
+		if err:=decoder.Decode(body);err!=nil{
+			respondWithError(w,500,"Failed to parse json body")
+			return
+		}
+
+		if body.Event!="user.upgraded"{
+			w.WriteHeader(204)
+			return
+		}
+
+		_,err=apiCfg.dbQueries.MakeUserChirpyRed(r.Context(),body.Data.UserID)
+		if err!=nil{
+			w.WriteHeader(404)
+			return
+		}
+
+		w.WriteHeader(204)
 	})
 
 	serverErr := server.ListenAndServe()
